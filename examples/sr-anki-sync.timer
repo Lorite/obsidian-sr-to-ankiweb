@@ -1,0 +1,10 @@
+[Unit]
+Description=Push the Obsidian flashcards to AnkiWeb every 3 hours
+
+[Timer]
+OnCalendar=*-*-* 00/3:20:00
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

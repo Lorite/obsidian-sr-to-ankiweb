@@ -1,0 +1,16 @@
+# Copy to ~/.config/systemd/user/ together with sr-anki-sync.timer, adjust the paths, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now sr-anki-sync.timer
+# Run "sr-anki-sync login" once before, the unit does nothing until the key exists.
+[Unit]
+Description=Push the Obsidian spaced-repetition flashcards to Anki and sync with AnkiWeb
+ConditionPathExists=%h/.config/sr-anki-sync/ankiweb-auth.json
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/sr-anki-sync sync
+Environment=SR_ANKI_VAULT=%h/Obsidian/MyVault
+# Optional, see the README:
+#Environment=SR_ANKI_NEW_PER_DAY=50
+#Environment=SR_ANKI_NEW_ORDER=newest
+Nice=10
+TimeoutStartSec=20min

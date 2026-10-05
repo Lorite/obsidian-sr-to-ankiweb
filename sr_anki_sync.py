@@ -419,7 +419,8 @@ def collect(st: SRSettings) -> list[Card]:
                 )
                 if kind != "cloze" and not norm(strip_noise(front)):
                     continue
-                context = [title] + question_context(heads, line_no)
+                # A heading that repeats the note title (a common "# Title" line) adds nothing.
+                context = [title] + [h for h in question_context(heads, line_no) if h.casefold() != title.casefold()]
                 cards.append(Card(kind, front, back, rel, deck, tags, created, context))
     assign_guids(cards)
     return cards

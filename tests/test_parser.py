@@ -108,3 +108,13 @@ def test_context_skip(monkeypatch):
     monkeypatch.setattr(s, "CONTEXT_SKIP", s.re.compile(r"Flashcards|AI Generated.*", s.re.I))
     text = "# AI Generated\n## Flashcards\n### Kinematics\nQ :: A"
     assert s.question_context(s.headings_of(text), 3) == ["Kinematics"]
+
+
+def test_heading_equal_to_title_is_dropped(tmp_path, monkeypatch):
+    plugin = tmp_path / ".obsidian/plugins/obsidian-spaced-repetition"
+    plugin.mkdir(parents=True)
+    (plugin / "data.json").write_text('{"settings": {"convertFoldersToDecks": true}}')
+    (tmp_path / "Danish.md").write_text("# Danish\n## Cards\nhej ::: hello\n")
+    monkeypatch.setattr(s, "VAULT", tmp_path)
+    monkeypatch.setattr(s, "SR_DATA", plugin / "data.json")
+    assert [c.context for c in s.collect(s.SRSettings.load())] == [["Danish", "Cards"]]

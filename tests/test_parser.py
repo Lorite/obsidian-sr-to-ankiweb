@@ -7,7 +7,8 @@ CLOZE_RES = [s.cloze_regex(p) for p in ST.cloze_patterns]
 
 
 def parse(text):
-    return s.parse(text, ST, CLOZE_RES)
+    """The cards without their line numbers."""
+    return [(t, raw) for t, raw, _ in s.parse(text, ST, CLOZE_RES)]
 
 
 def test_single_line_cards():
@@ -84,3 +85,26 @@ def test_tag_decks_when_folders_are_off(tmp_path, monkeypatch):
         ("a/inline.md", "Obsidian::flashcards"),
         ("a/tagged.md", "Obsidian::flashcards::spanish"),
     ]
+
+
+def test_card_lines_and_heading_context():
+    text = "# Title\n\n## Part A\n\nQ1 :: A1\n\n### Detail\n\nfront\n?\nback\n\n## Part B\n\n==cloze== here"
+    cards = s.parse(text, ST, CLOZE_RES)
+    assert [line for _, _, line in cards] == [4, 8, 14]
+    heads = s.headings_of(text)
+    assert [s.question_context(heads, line) for _, _, line in cards] == [
+        ["Title", "Part A"],
+        ["Title", "Part A", "Detail"],
+        ["Title", "Part B"],
+    ]
+
+
+def test_headings_in_code_and_links_are_cleaned():
+    text = "```\n# not a heading\n```\n## See [[Other note|other]] [^1] [x](#x)\nQ :: A"
+    assert s.question_context(s.headings_of(text), 4) == ["See other x"]
+
+
+def test_context_skip(monkeypatch):
+    monkeypatch.setattr(s, "CONTEXT_SKIP", s.re.compile(r"Flashcards|AI Generated.*", s.re.I))
+    text = "# AI Generated\n## Flashcards\n### Kinematics\nQ :: A"
+    assert s.question_context(s.headings_of(text), 3) == ["Kinematics"]

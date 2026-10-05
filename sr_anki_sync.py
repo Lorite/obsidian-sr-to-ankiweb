@@ -65,6 +65,9 @@ REVIEWS_PER_DAY = env_int("SR_ANKI_REVIEWS_PER_DAY")
 # Order of unseen cards: "newest" (newest note first, by its created date), "oldest", or
 # empty to keep the order in which the cards were added.
 NEW_ORDER = os.environ.get("SR_ANKI_NEW_ORDER", "").strip().lower()
+# Headings to leave out of the breadcrumb above each card, as one regex matched against the
+# whole heading, case-insensitive. Useful for template headings such as "Flashcards".
+CONTEXT_SKIP = re.compile(os.environ.get("SR_ANKI_CONTEXT_SKIP", "") or r"(?!)", re.I)
 # Frontmatter keys that hold a note's creation date, first match wins. File mtime otherwise.
 CREATED_KEYS = ("created", "date_created", "date")
 # Never parsed, whatever the plugin settings say.
@@ -94,6 +97,7 @@ class SRSettings:
     folders_to_ignore: list[str] = field(default_factory=list)
     note_tags_to_ignore: list[str] = field(default_factory=list)
     convert_folders: bool = True
+    show_context: bool = True
     flashcard_tags: list[str] = field(default_factory=lambda: ["#flashcards"])
 
     @classmethod
@@ -121,6 +125,7 @@ class SRSettings:
             folders_to_ignore=list(s.get("noteFoldersToIgnore", [])),
             note_tags_to_ignore=list(s.get("noteTagsToIgnore", [])),
             convert_folders=bool(s.get("convertFoldersToDecks", False)),
+            show_context=bool(s.get("showContextInCards", True)),
             flashcard_tags=list(s.get("flashcardTags", ["#flashcards"])),
         )
 
@@ -173,11 +178,12 @@ def has_inline_marker(text: str, marker: str) -> bool:
     return idx != -1 and not marker_inside_code(text, marker, idx)
 
 
-def parse(text: str, st: SRSettings, cloze_res: list[re.Pattern]) -> list[tuple[str, str]]:
-    """Return (card type, raw card text) pairs, exactly as the plugin finds them."""
+def parse(text: str, st: SRSettings, cloze_res: list[re.Pattern]) -> list[tuple[str, str, int]]:
+    """Return (card type, raw card text, first line) for each card, exactly as the plugin
+    finds them. Lines count from 0."""
     inline = sorted([(st.single, SINGLE), (st.single_rev, SINGLE_REV)], key=lambda x: -len(x[0]))
-    cards: list[tuple[str, str]] = []
-    card_text, card_type = "", None
+    cards: list[tuple[str, str, int]] = []
+    card_text, card_type, first = "", None, 0
     lines = text.replace("\r\n", "\n").split("\n")
     i = 0
     while i < len(lines):
@@ -193,11 +199,13 @@ def parse(text: str, st: SRSettings, cloze_res: list[re.Pattern]) -> list[tuple[
         end_marker = bool(st.multi_end) and trimmed == st.multi_end
         if (empty and not st.multi_end) or (empty and card_type is None) or end_marker:
             if card_type:
-                cards.append((card_type, card_text.rstrip()))
+                cards.append((card_type, card_text.rstrip(), first))
                 card_type = None
             card_text = ""
             i += 1
             continue
+        if not card_text:
+            first = i
         if card_text:
             card_text += "\n"
         card_text += line.rstrip()
@@ -206,10 +214,10 @@ def parse(text: str, st: SRSettings, cloze_res: list[re.Pattern]) -> list[tuple[
                 card_type = typ
                 break
         if card_type in (SINGLE, SINGLE_REV):
-            card_text = line
+            card_text, first = line, i
             if i + 1 < len(lines) and lines[i + 1].startswith("<!--SR:"):
                 i += 1
-            cards.append((card_type, card_text))
+            cards.append((card_type, card_text, first))
             card_type, card_text = None, ""
         elif trimmed == st.multi:
             if len(card_text) > 1:
@@ -228,8 +236,46 @@ def parse(text: str, st: SRSettings, cloze_res: list[re.Pattern]) -> list[tuple[
             card_type = CLOZE
         i += 1
     if card_type and card_text:
-        cards.append((card_type, card_text.rstrip()))
+        cards.append((card_type, card_text.rstrip(), first))
     return cards
+
+
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+
+
+def headings_of(text: str) -> list[tuple[int, int, str]]:
+    """(line, level, text) of every Markdown heading outside fenced code."""
+    out, fence = [], None
+    for n, line in enumerate(text.split("\n")):
+        m = re.match(r"\s*(`{3,}|~{3,})", line)
+        if m:
+            fence = None if fence and m.group(1).startswith(fence) else (fence or m.group(1))
+            continue
+        if fence is None:
+            h = HEADING_RE.match(line)
+            if h:
+                out.append((n, len(h.group(1)), h.group(2)))
+    return out
+
+
+def question_context(headings: list[tuple[int, int, str]], card_line: int) -> list[str]:
+    """The heading path above a card, as the plugin's getQuestionContext builds it."""
+    stack: list[tuple[int, str]] = []
+    for line, level, title in headings:
+        if line > card_line:
+            break
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, title))
+    out = []
+    for _, title in stack:
+        title = re.sub(r"\[\^\d+\]", "", title)
+        title = re.sub(r"\[\[([^\]|]*\|)?([^\]]*)\]\]", r"\2", title)
+        title = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", title)
+        title = re.sub(r"(==|\*\*|__)", "", title).strip()
+        if title and not CONTEXT_SKIP.fullmatch(title):
+            out.append(title)
+    return out
 
 
 def split_front_back(typ: str, text: str, st: SRSettings) -> tuple[str, str]:
@@ -320,6 +366,7 @@ class Card:
     deck: str
     tags: list[str]
     created: float = 0.0
+    context: list[str] = field(default_factory=list)
     guid: str = ""
 
 
@@ -361,7 +408,9 @@ def collect(st: SRSettings) -> list[Card]:
                 if deck_path is None:
                     continue
             deck = "::".join([ROOT_DECK] + deck_path)
-            for typ, raw in parse(text, st, cloze_res):
+            title = Path(rel).stem
+            heads = headings_of(text) if st.show_context else []
+            for typ, raw, line_no in parse(text, st, cloze_res):
                 if typ in (SINGLE, SINGLE_REV) and DATAVIEW_FIELD_RE.search(raw):
                     continue
                 front, back = split_front_back(typ, raw, st)
@@ -370,7 +419,8 @@ def collect(st: SRSettings) -> list[Card]:
                 )
                 if kind != "cloze" and not norm(strip_noise(front)):
                     continue
-                cards.append(Card(kind, front, back, rel, deck, tags, created))
+                context = [title] + question_context(heads, line_no)
+                cards.append(Card(kind, front, back, rel, deck, tags, created, context))
     assign_guids(cards)
     return cards
 
@@ -497,9 +547,12 @@ def to_anki_cloze(s: str, cloze_res: list[re.Pattern]) -> str:
     return s
 
 
-def source_html(path: str) -> str:
+def source_html(path: str, context: list[str]) -> str:
+    """The breadcrumb shown above each card (note title, then the headings above the card,
+    as in the plugin), linking to the note in Obsidian."""
     q = urllib.parse.urlencode({"vault": VAULT_NAME, "file": path[:-3]}, quote_via=urllib.parse.quote)
-    return f'<a href="obsidian://open?{q}">{html.escape(path[:-3])}</a>'
+    crumb = " › ".join(html.escape(c) for c in (context or [Path(path).stem]))
+    return f'<a href="obsidian://open?{q}">{crumb}</a>'
 
 
 def anki_tags(tags: list[str]) -> list[str]:
@@ -518,9 +571,12 @@ CSS = """.card { font-family: system-ui, sans-serif; font-size: 20px; text-align
 .nightMode .card, .card.nightMode { color: #ddd; background-color: #222; }
 mark { background: #fff3a0; } .nightMode mark { background: #6b5d00; color: #fff; }
 .cloze { font-weight: bold; color: #2196f3; }
-.osr-source { margin-top: 1.5em; font-size: 12px; opacity: .6; }
+.osr-context { font-size: 13px; opacity: .65; margin-bottom: 1em; }
+.osr-context a { color: inherit; text-decoration: none; }
 img { max-width: 100%; }"""
-SOURCE = '<div class="osr-source">{{Source}}</div>'
+# Bump when the templates or CSS change, so an unchanged vault still triggers a run.
+TEMPLATE_VERSION = 2
+CONTEXT = '<div class="osr-context">{{Source}}</div>'
 
 
 def ensure_models(col) -> tuple[dict[str, dict], bool]:
@@ -528,16 +584,20 @@ def ensure_models(col) -> tuple[dict[str, dict], bool]:
     schema change, after which Anki only accepts a one-way full sync."""
     mm = col.models
     specs = {
-        MODEL_BASIC: (0, ["Front", "Back", "Source"], [("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")]),
+        MODEL_BASIC: (
+            0,
+            ["Front", "Back", "Source"],
+            [("Card 1", CONTEXT + "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")],
+        ),
         MODEL_REVERSED: (
             0,
             ["Front", "Back", "Source"],
             [
-                ("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}"),
-                ("Card 2", "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}"),
+                ("Card 1", CONTEXT + "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}"),
+                ("Card 2", CONTEXT + "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}"),
             ],
         ),
-        MODEL_CLOZE: (1, ["Text", "Source"], [("Cloze", "{{cloze:Text}}", "{{cloze:Text}}")]),
+        MODEL_CLOZE: (1, ["Text", "Source"], [("Cloze", CONTEXT + "{{cloze:Text}}", CONTEXT + "{{cloze:Text}}")]),
     }
     models = {}
     created = False
@@ -551,17 +611,29 @@ def ensure_models(col) -> tuple[dict[str, dict], bool]:
                 mm.add_field(m, mm.new_field(f))
             for tname, q, a in templates:
                 t = mm.new_template(tname)
-                t["qfmt"], t["afmt"] = q, a + SOURCE
+                t["qfmt"], t["afmt"] = q, a
                 mm.add_template(m, t)
             m["css"] = CSS
             mm.add(m)
             m = mm.by_name(name)
+        else:
+            # Same fields and templates, only their text differs: a normal change, not a
+            # schema change, so it syncs without a full upload.
+            changed = m["css"] != CSS
+            for t, (_, q, a) in zip(m["tmpls"], templates, strict=False):
+                if (t["qfmt"], t["afmt"]) != (q, a):
+                    t["qfmt"], t["afmt"] = q, a
+                    changed = True
+            if changed:
+                m["css"] = CSS
+                mm.update_dict(m)
+                m = mm.by_name(name)
         models[name] = m
     return models, created
 
 
 def desired_fields(c: Card, r: Renderer) -> tuple[str, dict[str, str]]:
-    src = source_html(c.path)
+    src = source_html(c.path, c.context)
     if c.kind == "cloze":
         return MODEL_CLOZE, {"Text": r.to_html(c.front, cloze=True), "Source": src}
     model = MODEL_BASIC if c.kind == "basic" else MODEL_REVERSED
@@ -776,9 +848,9 @@ def cmd_sync(args) -> None:
 def cards_digest(cards: list[Card]) -> str:
     h = hashlib.sha1()
     # The managed options are part of the digest, so changing one triggers a run.
-    h.update(json.dumps([NEW_PER_DAY, REVIEWS_PER_DAY, NEW_ORDER, ROOT_DECK]).encode())
+    h.update(json.dumps([NEW_PER_DAY, REVIEWS_PER_DAY, NEW_ORDER, ROOT_DECK, TEMPLATE_VERSION, CONTEXT_SKIP.pattern]).encode())
     for c in cards:
-        h.update("\0".join([c.guid, c.kind, c.front, c.back, c.path, c.deck, ",".join(c.tags)]).encode())
+        h.update("\0".join([c.guid, c.kind, c.front, c.back, c.path, c.deck, ",".join(c.tags), *c.context]).encode())
     h.update(VAULT_NAME.encode())
     return h.hexdigest()
 

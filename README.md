@@ -12,7 +12,8 @@ Context: [obsidian-spaced-repetition#27](https://github.com/st3v3nmw/obsidian-sp
 - **Same cards as the plugin.** The plugin's parser (`src/parser.ts`) is ported line for line. Separators, cloze patterns and ignored folders come from your vault's `.obsidian/plugins/obsidian-spaced-repetition/data.json`.
 - **Supported card types:** `::`, `:::` (both directions), multi-line `?` and `??`, and clozes (highlights, bold or curly brackets, as enabled in the plugin, including `==2;;answer;;hint==`).
 - **Decks, as in the plugin.** With *Convert folders to decks* on, the folder is the deck: `work/concepts/x.md` lands in `Obsidian::work::concepts`. With it off (the plugin's default), only notes tagged with a flashcard tag are read, and the tag is the deck: `#flashcards/spanish` lands in `Obsidian::flashcards::spanish`. Note tags also become Anki tags (`a/b` becomes `a::b`), so you can build filtered decks by tag.
-- **Rendering.** Markdown becomes HTML, `$…$` and `$$…$$` become MathJax, `![[image.png]]` embeds become Anki media, `[[links]]` become plain text, and each card back links to its source note with `obsidian://open`.
+- **Where a card comes from.** Like the plugin's *Show context in cards*, each card starts with a small breadcrumb: the note title, then the headings above the card (`Note › Section › Subsection`). Tap it to open the note in Obsidian (`obsidian://open`). With the plugin setting off, only the note title is shown.
+- **Rendering.** Markdown becomes HTML, `$…$` and `$$…$$` become MathJax, `![[image.png]]` embeds become Anki media, and `[[links]]` become plain text.
 - **Two filters the plugin does not have.** Dataview inline fields (`(habit:: true)`, `status:: done`) are not cards, and a cloze needs a non-space character just inside its markers, so `a == b and c == d` is not a cloze.
 
 ## Safety
@@ -53,6 +54,7 @@ All settings are environment variables. `--vault` overrides `SR_ANKI_VAULT`.
 | `SR_ANKI_VAULT_NAME` | vault folder name | Vault name in the `obsidian://` links |
 | `SR_ANKI_NEW_PER_DAY` | (unchanged) | New cards per day for every generated deck |
 | `SR_ANKI_REVIEWS_PER_DAY` | (unchanged) | Maximum reviews per day for every generated deck |
+| `SR_ANKI_CONTEXT_SKIP` | (none) | Regex of headings to hide in the breadcrumb, e.g. `Flashcards\|AI Generated.*` |
 | `SR_ANKI_NEW_ORDER` | (unchanged) | `newest` shows cards from the most recently created notes first, `oldest` the opposite |
 
 The three deck options are kept in one Anki preset named after the root deck. If none of them is set, the tool leaves the deck options alone, so you can manage them in Anki instead. The note's creation date comes from the frontmatter (`created`, `date_created` or `date`), or else from the file's modification time.

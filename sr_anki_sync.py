@@ -272,7 +272,7 @@ def question_context(headings: list[tuple[int, int, str]], card_line: int) -> li
         title = re.sub(r"\[\^\d+\]", "", title)
         title = re.sub(r"\[\[([^\]|]*\|)?([^\]]*)\]\]", r"\2", title)
         title = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", title)
-        title = re.sub(r"(==|\*\*|__)", "", title).strip()
+        title = re.sub(r"\s+", " ", re.sub(r"(==|\*\*|__)", "", title)).strip()
         if title and not CONTEXT_SKIP.fullmatch(title):
             out.append(title)
     return out

@@ -118,3 +118,17 @@ def test_heading_equal_to_title_is_dropped(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "VAULT", tmp_path)
     monkeypatch.setattr(s, "SR_DATA", plugin / "data.json")
     assert [c.context for c in s.collect(s.SRSettings.load())] == [["Danish", "Cards"]]
+
+
+def test_note_decks(tmp_path, monkeypatch):
+    plugin = tmp_path / ".obsidian/plugins/obsidian-spaced-repetition"
+    plugin.mkdir(parents=True)
+    (plugin / "data.json").write_text('{"settings": {"convertFoldersToDecks": true}}')
+    (tmp_path / "work").mkdir()
+    (tmp_path / "work/C++::Templates  basics.md").write_text("Q :: A\n")
+    (tmp_path / "Root note.md").write_text("Q2 :: A2\n")
+    monkeypatch.setattr(s, "VAULT", tmp_path)
+    monkeypatch.setattr(s, "SR_DATA", plugin / "data.json")
+    monkeypatch.setattr(s, "NOTE_DECKS", True)
+    decks = sorted(c.deck for c in s.collect(s.SRSettings.load()))
+    assert decks == ["Obsidian::Root note", "Obsidian::work::C++:Templates basics"]

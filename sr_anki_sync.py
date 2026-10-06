@@ -68,6 +68,10 @@ NEW_ORDER = os.environ.get("SR_ANKI_NEW_ORDER", "").strip().lower()
 # Headings to leave out of the breadcrumb above each card, as one regex matched against the
 # whole heading, case-insensitive. Useful for template headings such as "Flashcards".
 CONTEXT_SKIP = re.compile(os.environ.get("SR_ANKI_CONTEXT_SKIP", "") or r"(?!)", re.I)
+# One deck per note, nested under its folder (or tag) deck: Obsidian::work::concepts::Note.
+# Studying the folder deck still includes all its notes, because Anki studies a parent deck
+# together with its subdecks.
+NOTE_DECKS = os.environ.get("SR_ANKI_NOTE_DECKS", "").strip().lower() in ("1", "true", "yes", "on")
 # Frontmatter keys that hold a note's creation date, first match wins. File mtime otherwise.
 CREATED_KEYS = ("created", "date_created", "date")
 # Never parsed, whatever the plugin settings say.
@@ -407,8 +411,10 @@ def collect(st: SRSettings) -> list[Card]:
                 deck_path = tag_deck(tags + INLINE_TAG_RE.findall(body), st)
                 if deck_path is None:
                     continue
-            deck = "::".join([ROOT_DECK] + deck_path)
             title = Path(rel).stem
+            if NOTE_DECKS:
+                deck_path = deck_path + [deck_title(title)]
+            deck = "::".join([ROOT_DECK] + deck_path)
             heads = headings_of(text) if st.show_context else []
             for typ, raw, line_no in parse(text, st, cloze_res):
                 if typ in (SINGLE, SINGLE_REV) and DATAVIEW_FIELD_RE.search(raw):
@@ -424,6 +430,11 @@ def collect(st: SRSettings) -> list[Card]:
                 cards.append(Card(kind, front, back, rel, deck, tags, created, context))
     assign_guids(cards)
     return cards
+
+
+def deck_title(title: str) -> str:
+    """A note title as one deck name component ("::" separates Anki decks)."""
+    return re.sub(r"\s+", " ", title.replace("::", ":")).strip() or "Untitled"
 
 
 def assign_guids(cards: list[Card]) -> None:
@@ -849,7 +860,7 @@ def cmd_sync(args) -> None:
 def cards_digest(cards: list[Card]) -> str:
     h = hashlib.sha1()
     # The managed options are part of the digest, so changing one triggers a run.
-    h.update(json.dumps([NEW_PER_DAY, REVIEWS_PER_DAY, NEW_ORDER, ROOT_DECK, TEMPLATE_VERSION, CONTEXT_SKIP.pattern]).encode())
+    h.update(json.dumps([NEW_PER_DAY, REVIEWS_PER_DAY, NEW_ORDER, ROOT_DECK, TEMPLATE_VERSION, CONTEXT_SKIP.pattern, NOTE_DECKS]).encode())
     for c in cards:
         h.update("\0".join([c.guid, c.kind, c.front, c.back, c.path, c.deck, ",".join(c.tags), *c.context]).encode())
     h.update(VAULT_NAME.encode())
@@ -901,10 +912,11 @@ def reposition_new_cards(col, cards: list[Card]) -> int:
 
 
 def remove_empty_decks(col) -> None:
+    # By id, not by a "deck:" search: note titles can contain " * _ which a search misreads.
     for d in sorted(col.decks.all_names_and_ids(), key=lambda d: -d.name.count("::")):
         if not d.name.startswith(ROOT_DECK + "::"):
             continue
-        if not col.find_cards(f'"deck:{d.name}"'):
+        if not col.decks.card_count(d.id, include_subdecks=True):
             col.decks.remove([d.id])
 
 

@@ -52,6 +52,7 @@ All settings are environment variables. `--vault` overrides `SR_ANKI_VAULT`.
 | `SR_ANKI_ROOT_DECK` | `Obsidian` | Parent deck of all generated decks |
 | `SR_ANKI_EXCLUDE` | (none) | Comma-separated path prefixes to leave out, e.g. `Daily/,Templates/` |
 | `SR_ANKI_VAULT_NAME` | vault folder name | Vault name in the `obsidian://` links |
+| `SR_ANKI_NOTE_DECKS` | off | `1` puts each note's cards in their own deck under the folder deck, e.g. `Obsidian::work::concepts::Entropy`. Studying the folder deck still includes them all |
 | `SR_ANKI_NEW_PER_DAY` | (unchanged) | New cards per day for every generated deck |
 | `SR_ANKI_REVIEWS_PER_DAY` | (unchanged) | Maximum reviews per day for every generated deck |
 | `SR_ANKI_CONTEXT_SKIP` | (none) | Regex of headings to hide in the breadcrumb, e.g. `Flashcards\|AI Generated.*` |

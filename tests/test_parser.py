@@ -164,4 +164,19 @@ def test_review_export(tmp_path, monkeypatch):
     assert (first["kind"], first["first_review"], first["interval_days"]) == ("learn", 1, 0.007)
     assert (second["kind"], second["first_review"], second["button"], second["seconds"]) == ("review", 0, 4, 7.5)
     assert second["note_path"] == "work/Entropy.md" and second["deck"] == "Obsidian::work::Entropy"
+
+    # Export: one file per day of the window, header-only on days without reviews.
+    class FakeDate(dt.date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 7)
+
+    monkeypatch.setattr(s.dt, "date", FakeDate)
+    monkeypatch.setattr(s, "STATS_DIR", str(tmp_path / "stats"))
+    monkeypatch.setattr(s, "STATS_DAYS", 3)
+    s.export_stats(col)
+    files = sorted(p.name for p in (tmp_path / "stats").rglob("*.csv"))
+    assert files == ["Anki_Reviews_2026-10-05.csv", "Anki_Reviews_2026-10-06.csv", "Anki_Reviews_2026-10-07.csv"]
+    assert (tmp_path / "stats/2026-10-05/Anki_Reviews_2026-10-05.csv").read_text().count("\n") == 1
+    assert (tmp_path / "stats/2026-10-07/Anki_Reviews_2026-10-07.csv").read_text().count("\n") == 2
     col.close()

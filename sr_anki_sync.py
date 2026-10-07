@@ -930,7 +930,12 @@ def export_stats(col) -> None:
     base = Path(STATS_DIR) if Path(STATS_DIR).is_absolute() else VAULT / STATS_DIR
     start = dt.datetime.combine(dt.date.today() - dt.timedelta(days=STATS_DAYS - 1), dt.time())
     written = 0
-    for day, rows in review_rows(col, int(start.timestamp() * 1000)).items():
+    by_day = review_rows(col, int(start.timestamp() * 1000))
+    # Every day of the window gets a file, a header-only one when nothing was reviewed, so
+    # "0 reviews" is not mistaken for "no data" (no file = before the export existed).
+    for n in range(STATS_DAYS):
+        day = (start.date() + dt.timedelta(days=n)).isoformat()
+        rows = by_day.get(day, [])
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=STATS_FIELDS, lineterminator="\n")
         writer.writeheader()

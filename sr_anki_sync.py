@@ -26,7 +26,10 @@ obsidian-spaced-repetition, Copyright (c) 2021 - 2024 Stephen Mwangi, MIT Licens
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime as dt
 import fcntl
+import io
 import getpass
 import hashlib
 import html
@@ -72,6 +75,12 @@ CONTEXT_SKIP = re.compile(os.environ.get("SR_ANKI_CONTEXT_SKIP", "") or r"(?!)",
 # Studying the folder deck still includes all its notes, because Anki studies a parent deck
 # together with its subdecks.
 NOTE_DECKS = os.environ.get("SR_ANKI_NOTE_DECKS", "").strip().lower() in ("1", "true", "yes", "on")
+# Review statistics: one CSV per calendar day with reviews, in <dir>/<YYYY-MM-DD>/
+# Anki_Reviews_<YYYY-MM-DD>.csv. A relative dir is relative to the vault. Every sync pulls
+# from AnkiWeb when this is set, also when the vault is unchanged, so the counts stay
+# current. The last STATS_DAYS days are rewritten (reviews made offline arrive late).
+STATS_DIR = os.environ.get("SR_ANKI_STATS_DIR", "").strip()
+STATS_DAYS = env_int("SR_ANKI_STATS_DAYS") or 7
 # Frontmatter keys that hold a note's creation date, first match wins. File mtime otherwise.
 CREATED_KEYS = ("created", "date_created", "date")
 # Never parsed, whatever the plugin settings say.
@@ -761,7 +770,18 @@ def cmd_sync(args) -> None:
     digest = cards_digest(cards)
     state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
     if online and not args.force and state.get("pushed_digest") == digest:
-        print(f"{len(cards)} vault cards, unchanged since the last push. Nothing to do.")
+        if not STATS_DIR:
+            print(f"{len(cards)} vault cards, unchanged since the last push. Nothing to do.")
+            return
+        # Nothing to push, but the review statistics need the reviews from AnkiWeb.
+        auth = load_auth()
+        col = open_collection()
+        try:
+            sync_once(col, auth, False)
+            print(f"{len(cards)} vault cards, unchanged since the last push. Pulled reviews only.")
+            export_stats(col)
+        finally:
+            col.close()
         return
     auth = load_auth() if online else None
     col = open_collection()
@@ -853,8 +873,75 @@ def cmd_sync(args) -> None:
             state["pushed_digest"] = digest
             STATE_FILE.write_text(json.dumps(state))
             print("Synced with AnkiWeb.")
+        if not args.dry_run:
+            export_stats(col)
     finally:
         col.close()
+
+
+REVLOG_KINDS = {0: "learn", 1: "review", 2: "relearn", 3: "filtered", 4: "manual", 5: "rescheduled"}
+STATS_FIELDS = ["time", "card_id", "note_path", "note_title", "deck", "kind", "first_review", "button", "seconds", "interval_days"]
+
+
+def source_path(source: str) -> str:
+    """The vault path stored in a card's Source link, with the .md extension."""
+    m = re.search(r"[?&]file=([^\"&]+)", source)
+    return urllib.parse.unquote(m.group(1)) + ".md" if m else ""
+
+
+def review_rows(col, since_ms: int) -> dict[str, list[dict]]:
+    """Reviews since the given time, grouped by local calendar day."""
+    first = dict(col.db.all("select cid, min(id) from revlog group by cid"))
+    days: dict[str, list[dict]] = {}
+    sql = "select id, cid, ease, ivl, time, type from revlog where id >= ? order by id"
+    for rid, cid, ease, ivl, ms, rtype in col.db.all(sql, since_ms):
+        stamp = dt.datetime.fromtimestamp(rid / 1000)
+        path = title = deck = ""
+        try:
+            card = col.get_card(cid)
+            note = card.note()
+            deck = col.decks.name(card.did)
+            if "Source" in note.keys():
+                path = source_path(note["Source"])
+                title = Path(path).stem
+        except Exception:
+            pass  # the card was deleted since, the review still counts
+        days.setdefault(stamp.strftime("%Y-%m-%d"), []).append(
+            {
+                "time": stamp.strftime("%Y-%m-%dT%H:%M:%S"),
+                "card_id": cid,
+                "note_path": path,
+                "note_title": title,
+                "deck": deck,
+                "kind": REVLOG_KINDS.get(rtype, str(rtype)),
+                "first_review": int(first.get(cid) == rid),
+                "button": ease,
+                "seconds": round(ms / 1000, 1),
+                # Anki stores learning intervals as negative seconds.
+                "interval_days": ivl if ivl >= 0 else round(-ivl / 86400, 3),
+            }
+        )
+    return days
+
+
+def export_stats(col) -> None:
+    if not STATS_DIR:
+        return
+    base = Path(STATS_DIR) if Path(STATS_DIR).is_absolute() else VAULT / STATS_DIR
+    start = dt.datetime.combine(dt.date.today() - dt.timedelta(days=STATS_DAYS - 1), dt.time())
+    written = 0
+    for day, rows in review_rows(col, int(start.timestamp() * 1000)).items():
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=STATS_FIELDS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        target = base / day / f"Anki_Reviews_{day}.csv"
+        if target.exists() and target.read_text() == buf.getvalue():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(buf.getvalue())
+        written += 1
+    print(f"Review statistics: {written} day file(s) updated in {base}.")
 
 
 def cards_digest(cards: list[Card]) -> str:

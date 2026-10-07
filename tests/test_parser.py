@@ -132,3 +132,36 @@ def test_note_decks(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "NOTE_DECKS", True)
     decks = sorted(c.deck for c in s.collect(s.SRSettings.load()))
     assert decks == ["Obsidian::Root note", "Obsidian::work::C++:Templates basics"]
+
+
+def test_source_path():
+    src = s.source_html("work/concepts/A & B (x).md", ["A & B (x)"])
+    assert s.source_path(src) == "work/concepts/A & B (x).md"
+
+
+def test_review_export(tmp_path, monkeypatch):
+    import datetime as dt
+
+    from anki.collection import Collection
+
+    col = Collection(str(tmp_path / "c.anki2"))
+    models, _ = s.ensure_models(col)
+    note = col.new_note(models[s.MODEL_BASIC])
+    note["Front"], note["Back"] = "Q", "A"
+    note["Source"] = s.source_html("work/Entropy.md", ["Entropy"])
+    col.add_note(note, col.decks.id("Obsidian::work::Entropy"))
+    cid = note.card_ids()[0]
+    day1 = dt.datetime(2026, 10, 6, 19, 0)
+    day2 = dt.datetime(2026, 10, 7, 8, 30)
+    for when, ease, ivl, rtype in [(day1, 3, -600, 0), (day2, 4, 3, 1)]:
+        col.db.execute(
+            "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type) values (?,?,?,?,?,?,?,?,?)",
+            int(when.timestamp() * 1000), cid, -1, ease, ivl, 0, 2500, 7500, rtype,
+        )
+    days = s.review_rows(col, int(dt.datetime(2026, 10, 1).timestamp() * 1000))
+    assert sorted(days) == ["2026-10-06", "2026-10-07"]
+    first, second = days["2026-10-06"][0], days["2026-10-07"][0]
+    assert (first["kind"], first["first_review"], first["interval_days"]) == ("learn", 1, 0.007)
+    assert (second["kind"], second["first_review"], second["button"], second["seconds"]) == ("review", 0, 4, 7.5)
+    assert second["note_path"] == "work/Entropy.md" and second["deck"] == "Obsidian::work::Entropy"
+    col.close()
